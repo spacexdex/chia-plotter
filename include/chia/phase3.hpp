@@ -36,9 +36,9 @@ void compute_stage1(int L_index, int num_threads,
 	std::vector<uint32_t> L_buffer;		// new_pos buffer
 	std::atomic<uint64_t> R_num_write {0};
 	
-	Thread<std::vector<entry_np>> L_read(
+	Thread<std::pair<std::vector<entry_np>, size_t>> L_read(
 		[&mutex, &signal, &L_buffer, &L_offset, &L_position, &R_is_waiting]
-		 (std::vector<entry_np>& input) {
+		 (std::pair<std::vector<entry_np>, size_t>& input) {
 			std::unique_lock<std::mutex> lock(mutex);
 			while(!R_is_waiting) {
 				signal.wait(lock);
@@ -49,7 +49,7 @@ void compute_stage1(int L_index, int num_threads,
 				L_offset += count;
 				L_buffer.erase(L_buffer.begin(), L_buffer.begin() + count);
 			}
-			for(const auto& entry : input) {
+			for(const auto& entry : input.first) {
 				L_buffer.push_back(entry.pos);
 			}
 			lock.unlock();
@@ -69,7 +69,8 @@ void compute_stage1(int L_index, int num_threads,
 				tmp.pos = get_new_pos<T>{}(entry);
 				out.push_back(tmp);
 			}
-			L_read.take(out);
+			std::pair<std::vector<entry_np>, size_t> pair(std::move(out), input.second);
+			L_read.take(pair);
 		}, "phase3/filter_1");
 	
 	typedef DiskSortLP::WriteCache WriteCache;
@@ -89,13 +90,13 @@ void compute_stage1(int L_index, int num_threads,
 			R_num_write += input.size();
 		}, nullptr, std::max(num_threads / 2, 1), "phase3/add");
 	
-	Thread<std::vector<S>> R_read(
+	Thread<std::pair<std::vector<S>, size_t>> R_read(
 		[&mutex, &signal, &L_offset, &L_position, &L_buffer, &L_is_end, &R_is_waiting, &R_add_2]
-		 (std::vector<S>& input) {
+		 (std::pair<std::vector<S>, size_t>& input) {
 			std::vector<entry_kpp> out;
-			out.reserve(input.size());
+			out.reserve(input.first.size());
 			std::unique_lock<std::mutex> lock(mutex);
-			for(const auto& entry : input) {
+			for(const auto& entry : input.first) {
 				uint64_t pos[2];
 				pos[0] = entry.pos;
 				pos[1] = uint64_t(entry.pos) + entry.off;
@@ -124,28 +125,20 @@ void compute_stage1(int L_index, int num_threads,
 			R_add_2.take(out);
 		}, "phase3/merge");
 	
-	Thread<std::pair<std::vector<S>, size_t>> R_read_7(
-		[&R_read](std::pair<std::vector<S>, size_t>& input) {
-			R_read.take(input.first);
-		}, "phase3/misc");
-	
 	std::thread R_sort_read(
-		[num_threads, L_table, R_sort, R_table, &R_read, &R_read_7]() {
+		[num_threads, L_table, R_sort, R_table, &R_read]() {
 			if(R_table) {
-				R_table->read(&R_read_7);
-				R_read_7.close();
+				R_table->read(&R_read, std::max(num_threads / 4, 2));
 			} else {
-				const int div = L_table ? 1 : 2;
-				R_sort->read(&R_read, std::max(num_threads / div, 1));
+				R_sort->read(&R_read, std::max(num_threads / (L_table ? 1 : 2), 1));
 			}
 		});
 	
 	if(L_table) {
-		L_table->read(&L_read_1);
+		L_table->read(&L_read_1, std::max(num_threads / 4, 2));
 		L_read_1.close();
 	} else {
-		const int div = R_table ? 1 : 2;
-		L_sort->read(&L_read, std::max(num_threads / div, 1));
+		L_sort->read(&L_read, std::max(num_threads / (R_table ? 1 : 2), 1));
 	}
 	L_read.close();
 	{
@@ -298,7 +291,7 @@ uint64_t compute_stage2(int L_index, int num_threads,
 {
 	const auto begin = get_wall_time_micros();
 	
-	uint64_t R_num_read = 0;
+	std::atomic<uint64_t> R_num_read {0};
 	std::atomic<uint64_t> L_num_write {0};
 	std::atomic<uint64_t> num_written_final {0};
 	
@@ -316,81 +309,91 @@ uint64_t compute_stage2(int L_index, int num_threads,
 	
 	typedef DiskSortNP::WriteCache WriteCache;
 	
-	ThreadPool<std::vector<entry_np>, size_t, std::shared_ptr<WriteCache>> L_add(
+	ThreadPool<std::pair<std::vector<entry_lp>, size_t>, size_t, std::shared_ptr<WriteCache>> L_add(
 		[L_sort, &L_num_write]
-		 (std::vector<entry_np>& input, size_t&, std::shared_ptr<WriteCache>& cache) {
+		 (std::pair<std::vector<entry_lp>, size_t>& input, size_t&, std::shared_ptr<WriteCache>& cache) {
 			if(!cache) {
 				cache = L_sort->add_cache();
 			}
-			for(auto& entry : input) {
-				cache->add(entry);
-			}
-			L_num_write += input.size();
-		}, nullptr, std::max(num_threads / 2, 1), "phase3/add");
-	
-	Thread<park_out_t> park_write(
-		[plot_file](park_out_t& park) {
-			fwrite_at(plot_file, park.offset, park.buffer.data(), park.buffer.size());
-		}, "phase3/write");
-	
-	ThreadPool<park_data_t, park_out_t> park_threads(
-		[L_index, L_final_begin, park_size_bytes, &num_written_final]
-		 (park_data_t& input, park_out_t& out, size_t&) {
-			const auto& points = input.points;
-			if(points.empty()) {
-				throw std::logic_error("empty park input");
-			}
-			std::vector<uint8_t> deltas(points.size() - 1);
-			std::vector<uint64_t> stubs(points.size() - 1);
-			for(size_t i = 0; i < points.size() - 1; ++i) {
-				const auto big_delta = points[i + 1] - points[i];
-				const auto stub = big_delta & ((1ull << (32 - kStubMinusBits)) - 1);
-				const auto small_delta = big_delta >> (32 - kStubMinusBits);
-				if(small_delta >= 256) {
-					throw std::logic_error("small_delta >= 256 (" + std::to_string(small_delta) + ")");
-				}
-				deltas[i] = small_delta;
-				stubs[i] = stub;
-			}
-			out.offset = L_final_begin + input.index * park_size_bytes;
-			out.buffer.resize(park_size_bytes);
-			WritePark(
-				points[0],
-				deltas,
-				stubs,
-				L_index,
-				out.buffer.data(),
-				out.buffer.size());
-			num_written_final += points.size();
-		}, &park_write, std::max(num_threads / 2, 1), "phase3/park");
-	
-	Thread<std::vector<entry_lp>> R_read(
-		[&R_num_read, &L_add, &park, &park_threads]
-		 (std::vector<entry_lp>& input) {
-			std::vector<entry_np> out;
-			out.reserve(input.size());
-			for(const auto& entry : input) {
-				const auto index = R_num_read++;
+			uint64_t index = input.second;
+			for(const auto& entry : input.first) {
 				if(index >= uint64_t(1) << 32) {
-					continue;	// skip 32-bit overflow
+					break;	// skip 32-bit overflow
 				}
 				entry_np tmp;
 				tmp.key = entry.key;
-				tmp.pos = index;
-				out.push_back(tmp);
-				
+				tmp.pos = index++;
+				cache->add(tmp);
+			}
+			L_num_write += index - input.second;
+		}, nullptr, std::max(num_threads / 2, 1), "phase3/add");
+	
+	Thread<std::vector<park_out_t>> park_write(
+		[plot_file](std::vector<park_out_t>& input) {
+			for(const auto& park : input) {
+				fwrite_at(plot_file, park.offset, park.buffer.data(), park.buffer.size());
+			}
+		}, "phase3/write");
+	
+	ThreadPool<std::vector<park_data_t>, std::vector<park_out_t>> park_threads(
+		[L_index, L_final_begin, park_size_bytes, &num_written_final]
+		 (std::vector<park_data_t>& input, std::vector<park_out_t>& out, size_t&) {
+			for(const auto& park : input) {
+				const auto& points = park.points;
+				if(points.empty()) {
+					throw std::logic_error("empty park input");
+				}
+				std::vector<uint8_t> deltas(points.size() - 1);
+				std::vector<uint64_t> stubs(points.size() - 1);
+				for(size_t i = 0; i < points.size() - 1; ++i) {
+					const auto big_delta = points[i + 1] - points[i];
+					const auto stub = big_delta & ((1ull << (32 - kStubMinusBits)) - 1);
+					const auto small_delta = big_delta >> (32 - kStubMinusBits);
+					if(small_delta >= 256) {
+						throw std::logic_error("small_delta >= 256 (" + std::to_string(small_delta) + ")");
+					}
+					deltas[i] = small_delta;
+					stubs[i] = stub;
+				}
+				park_out_t tmp;
+				tmp.offset = L_final_begin + park.index * park_size_bytes;
+				tmp.buffer.resize(park_size_bytes);
+				WritePark(
+					points[0],
+					deltas,
+					stubs,
+					L_index,
+					tmp.buffer.data(),
+					tmp.buffer.size());
+				out.emplace_back(std::move(tmp));
+				num_written_final += points.size();
+			}
+		}, &park_write, std::max(num_threads / 2, 1), "phase3/park");
+	
+	Thread<std::pair<std::vector<entry_lp>, size_t>> R_read(
+		[&R_num_read, &L_add, &park, &park_threads](std::pair<std::vector<entry_lp>, size_t>& input) {
+			std::vector<park_data_t> parks;
+			parks.reserve(input.first.size() / kEntriesPerPark + 2);
+			uint64_t index = input.second;
+			for(const auto& entry : input.first) {
+				if(index >= uint64_t(1) << 32) {
+					break;	// skip 32-bit overflow
+				}
 				// Every EPP entries, writes a park
 				if(index % kEntriesPerPark == 0) {
 					if(index != 0) {
-						park_threads.take(park);
+						parks.emplace_back(std::move(park));
 						park.index++;
 					}
 					park.points.clear();
 					park.points.reserve(kEntriesPerPark);
 				}
 				park.points.push_back(entry.point);
+				index++;
 			}
-			L_add.take(out);
+			R_num_read += input.first.size();
+			park_threads.take(parks);
+			L_add.take(input);
 		}, "phase3/slice");
 	
 	R_sort->read(&R_read, num_threads);
@@ -398,7 +401,8 @@ uint64_t compute_stage2(int L_index, int num_threads,
 	
 	// Since we don't have a perfect multiple of EPP entries, this writes the last ones
 	if(!park.points.empty()) {
-		park_threads.take(park);
+		std::vector<park_data_t> parks{park};
+		park_threads.take(parks);
 		park.index++;
 	}
 	park_threads.close();
@@ -413,7 +417,7 @@ uint64_t compute_stage2(int L_index, int num_threads,
 	Encoding::ANSFree(kRValues[L_index - 1]);
 	
 	if(L_num_write < R_num_read) {
-		std::cout << "[P3-2] Lost " << R_num_read - L_num_write << " entries due to 32-bit overflow." << std::endl;
+//		std::cout << "[P3-2] Lost " << R_num_read - L_num_write << " entries due to 32-bit overflow." << std::endl;
 	}
 	std::cout << "[P3-2] Table " << L_index + 1 << " took "
 				<< (get_wall_time_micros() - begin) / 1e6 << " sec"

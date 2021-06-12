@@ -1,6 +1,6 @@
 # chia-plotter (pipelined multi-threaded)
 
-This is a new implementation of a chia plotter which is desinged as a processing pipeline,
+This is a new implementation of a chia plotter which is designed as a processing pipeline,
 similar to how GPUs work, only the "cores" are normal software CPU threads.
 
 As a result this plotter is able to fully max out any storage device's bandwidth,
@@ -8,23 +8,36 @@ simply by increasing the number of "cores", ie. threads.
 
 ## Usage
 
-```
-chia_plot <pool_key> <farmer_key> [tmp_dir] [tmp_dir2] [num_threads] [log_num_buckets]
+Check discord for support: https://discord.gg/rj46Dc5c
 
-For <pool_key> and <farmer_key> see output of `chia keys show`.
-<tmp_dir> needs about 200G space, it will handle about 25% of all writes. (Examples: './', '/mnt/tmp/')
-<tmp_dir2> needs about 110G space and ideally is a RAM drive, it will handle about 75% of all writes.
-If <tmp_dir> is not specified it defaults to current directory.
-If <tmp_dir2> is not specified it defaults to <tmp_dir>.
-[num_threads] defaults to 4, it's recommended to use number of physical cores.
-[log_num_buckets] defaults to 7 (2^7 = 128)
+```
+For <poolkey> and <farmerkey> see output of `chia keys show`.
+<tmpdir> needs about 220 GiB space, it will handle about 25% of all writes. (Examples: './', '/mnt/tmp/')
+<tmpdir2> needs about 110 GiB space and ideally is a RAM drive, it will handle about 75% of all writes.
+Combined (tmpdir + tmpdir2) peak disk usage is less than 256 GiB.
+
+Usage:
+  chia_plot [OPTION...]
+
+  -n, --count arg      Number of plots to create (default = 1, -1 = infinite)
+  -r, --threads arg    Number of threads (default = 4)
+  -u, --buckets arg    Number of buckets (default = 256)
+  -t, --tmpdir arg     Temporary directory, needs ~220 GiB (default = $PWD)
+  -2, --tmpdir2 arg    Temporary directory 2, needs ~110 GiB [RAM] (default = <tmpdir>)
+  -d, --finaldir arg   Final directory (default = <tmpdir>)
+  -p, --poolkey arg    Pool Public Key (48 bytes)
+  -f, --farmerkey arg  Farmer Public Key (48 bytes)
+      --help           Print help
 ```
 
-Make sure to crank up `<num_threads>` if you have plenty of cores, the default is 4.
+Make sure to crank up `<threads>` if you have plenty of cores, the default is 4.
 Depending on the phase more threads will be launched, the setting is just a multiplier.
 
-RAM usage depends on `<num_threads>` and `<log_num_buckets>`.
-With default `<log_num_buckets>` and 4 threads it's ~2GB total, with 16 threads it's ~6GB total.
+RAM usage depends on `<threads>` and `<buckets>`.
+With the new default of 256 buckets it's about 0.5 GB per thread at most.
+
+### RAM disk setup on Linux
+`sudo mount -t tmpfs -o size=110G tmpfs /mnt/ram/`
 
 ## How to Support
 
@@ -34,67 +47,65 @@ I developed this on my own time, even though I already filled all my HDDs (~50 T
 
 ## Results
 
-On a dual Xeon(R) E5-2650v2@2.60GHz R720 with 256GB RAM and a 3x800GB SATA SSD RAID0, using a 110G tmpfs for `<tmp_dir2>`:
+On a dual Xeon<sup>(R)</sup> E5-2650v2<span>@</span>2.60GHz R720 with 256GB RAM and a 3x800GB SATA SSD RAID0, using a 110G tmpfs for `<tmpdir2>`:
 
 ```
 Number of Threads: 16
-Number of Sort Buckets: 2^7 (128)
-Working Directory:   ./
-Working Directory 2: ./ram/
-[P1] Table 1 took 21.0467 sec
-[P1] Table 2 took 152.6 sec, found 4295044959 matches
-[P1] Lost 77279 matches due to 32-bit overflow.
-[P1] Table 3 took 181.169 sec, found 4295030463 matches
-[P1] Lost 62514 matches due to 32-bit overflow.
-[P1] Table 4 took 223.303 sec, found 4295044715 matches
-[P1] Lost 76928 matches due to 32-bit overflow.
-[P1] Table 5 took 232.129 sec, found 4294967739 matches
-[P1] Lost 235 matches due to 32-bit overflow.
-[P1] Table 6 took 221.468 sec, found 4294932892 matches
-[P1] Table 7 took 182.597 sec, found 4294838936 matches
-Phase 1 took 1214.37 sec
-[P2] max_table_size = 4295044959
-[P2] Table 7 scan took 16.9198 sec
-[P2] Table 7 rewrite took 44.796 sec, dropped 0 entries (0 %)
-[P2] Table 6 scan took 47.5287 sec
-[P2] Table 6 rewrite took 81.2195 sec, dropped 581301544 entries (13.5346 %)
-[P2] Table 5 scan took 46.6094 sec
-[P2] Table 5 rewrite took 77.9914 sec, dropped 761979000 entries (17.7412 %)
-[P2] Table 4 scan took 52.427 sec
-[P2] Table 4 rewrite took 75.7487 sec, dropped 828872625 entries (19.2983 %)
-[P2] Table 3 scan took 54.0839 sec
-[P2] Table 3 rewrite took 74.9016 sec, dropped 855088153 entries (19.9088 %)
-[P2] Table 2 scan took 49.692 sec
-[P2] Table 2 rewrite took 73.0273 sec, dropped 865610902 entries (20.1537 %)
-Phase 2 took 721.638 sec
+Number of Buckets: 2^8 (256)
+Working Directory:   /mnt/tmp3/chia/tmp/ 
+Working Directory 2: /mnt/tmp3/chia/tmp/ram/
+[P1] Table 1 took 17.2488 sec
+[P1] Table 2 took 145.011 sec, found 4294911201 matches
+[P1] Table 3 took 170.86 sec, found 4294940789 matches
+[P1] Table 4 took 203.713 sec, found 4294874801 matches
+[P1] Table 5 took 201.346 sec, found 4294830453 matches
+[P1] Table 6 took 195.928 sec, found 4294681297 matches
+[P1] Table 7 took 158.053 sec, found 4294486972 matches
+Phase 1 took 1092.2 sec
+[P2] max_table_size = 4294967296
+[P2] Table 7 scan took 15.5542 sec
+[P2] Table 7 rewrite took 37.7806 sec, dropped 0 entries (0 %)
+[P2] Table 6 scan took 46.7014 sec
+[P2] Table 6 rewrite took 65.7315 sec, dropped 581295425 entries (13.5352 %)
+[P2] Table 5 scan took 45.4663 sec
+[P2] Table 5 rewrite took 61.9683 sec, dropped 761999997 entries (17.7423 %)
+[P2] Table 4 scan took 44.8217 sec
+[P2] Table 4 rewrite took 61.36 sec, dropped 828847725 entries (19.2985 %)
+[P2] Table 3 scan took 44.9121 sec
+[P2] Table 3 rewrite took 61.5872 sec, dropped 855110820 entries (19.9097 %)
+[P2] Table 2 scan took 43.641 sec
+[P2] Table 2 rewrite took 59.6939 sec, dropped 865543167 entries (20.1528 %)
+Phase 2 took 620.488 sec
 Wrote plot header with 268 bytes
-[P3-1] Table 2 took 76.0894 sec, wrote 3429434057 right entries
-[P3-2] Table 2 took 75.1076 sec, wrote 3429434057 left entries, 3429434057 final
-[P3-1] Table 3 took 78.0162 sec, wrote 3439942310 right entries
-[P3-2] Table 3 took 73.0284 sec, wrote 3439942310 left entries, 3439942310 final
-[P3-1] Table 4 took 133.769 sec, wrote 3466172090 right entries
-[P3-2] Table 4 took 76.1504 sec, wrote 3466172090 left entries, 3466172090 final
-[P3-1] Table 5 took 127.125 sec, wrote 3532988739 right entries
-[P3-2] Table 5 took 77.7182 sec, wrote 3532988739 left entries, 3532988739 final
-[P3-1] Table 6 took 134.779 sec, wrote 3713631348 right entries
-[P3-2] Table 6 took 81.9068 sec, wrote 3713631348 left entries, 3713631348 final
-[P3-1] Table 7 took 69.066 sec, wrote 4294838936 right entries
-[P3-2] Table 7 took 94.0157 sec, wrote 4294838936 left entries, 4294838936 final
-Phase 3 took 1104.11 sec, wrote 21877007480 entries to final plot
-[P4] Starting to write C1 and C3 tables
-[P4] Finished writing C1 and C3 tables
+[P3-1] Table 2 took 73.1018 sec, wrote 3429368034 right entries
+[P3-2] Table 2 took 42.3999 sec, wrote 3429368034 left entries, 3429368034 final
+[P3-1] Table 3 took 68.9318 sec, wrote 3439829969 right entries
+[P3-2] Table 3 took 43.8179 sec, wrote 3439829969 left entries, 3439829969 final
+[P3-1] Table 4 took 71.3236 sec, wrote 3466027076 right entries
+[P3-2] Table 4 took 46.2887 sec, wrote 3466027076 left entries, 3466027076 final
+[P3-1] Table 5 took 70.6369 sec, wrote 3532830456 right entries
+[P3-2] Table 5 took 45.5857 sec, wrote 3532830456 left entries, 3532830456 final
+[P3-1] Table 6 took 75.8534 sec, wrote 3713385872 right entries
+[P3-2] Table 6 took 48.8266 sec, wrote 3713385872 left entries, 3713385872 final
+[P3-1] Table 7 took 83.2586 sec, wrote 4294486972 right entries
+[P3-2] Table 7 took 56.3803 sec, wrote 4294486972 left entries, 4294486972 final
+Phase 3 took 733.323 sec, wrote 21875928379 entries to final plot
+[P4] Starting to write C1 and C3 tables  
+[P4] Finished writing C1 and C3 tables   
 [P4] Writing C2 table
 [P4] Finished writing C2 table
-Phase 4 took 89.0748 sec, final plot size is 108834390977 bytes
-Total plot creation time was 3129.28 sec
+Phase 4 took 84.6697 sec, final plot size is 108828428322 bytes
+Total plot creation time was 2530.76 sec 
 ```
 
 ## How to Verify
 
-To make sure the plots are valid you can use the `ProofOfSpace` tool from `chiapos`:
+To make sure the plots are valid you can use the `ProofOfSpace` tool from [chiapos](https://github.com/Chia-Network/chiapos):
 
-```
-ProofOfSpace check -f plot-k32-???.plot [num_iterations]
+```bash
+git clone https://github.com/Chia-Network/chiapos.git
+cd chiapos && mkdir build && cd build && cmake .. && make -j8
+./ProofOfSpace check -f plot-k32-???.plot [num_iterations]
 ```
 
 ## Future Plans
@@ -112,13 +123,122 @@ keeping most of the load off the CPUs.
 - libsodium-dev
 
 ## Install
+---
+### Windows
+Binaries built by [stotiks](https://github.com/stotiks) can be found here:
+https://github.com/stotiks/chia-plotter/releases
 
-```
+---
+### Arch Linux
+```bash
+sudo pamac install cmake gmp libgmp-static libsodium libsodium-static gcc10
+# Checkout the source and install
+git clone https://github.com/madMAx43v3r/chia-plotter.git 
+cd chia-plotter
+
+# Use gcc10 during build
+export CC=gcc-10
+export CXX=g++-10
 git submodule update --init
 ./make_devel.sh
+./build/chia_plot --help
+```
+---
+### CentOS 7
+```bash
+git clone https://github.com/dendil/chia-plotter.git
+cd chia-plotter
+
+git submodule update --init
+sudo yum install epel-release -y
+sudo yum install cmake3 gmp-devel libsodium gmp-static libsodium-static -y
+ln /usr/bin/cmake3 /usr/bin/cmake
+# Install a package with repository for your system:
+# On CentOS, install package centos-release-scl available in CentOS repository:
+sudo yum install centos-release-scl -y
+# Install the collection:
+sudo yum install devtoolset-7 -y
+# Start using software collections:
+scl enable devtoolset-7 bash
+./make_devel.sh
+./build/chia_plot --help
+```
+---
+### Ubuntu 20.04
+```bash
+sudo apt install -y libsodium-dev libgmp3-dev cmake g++ git
+# Checkout the source and install
+git clone https://github.com/madMAx43v3r/chia-plotter.git 
+cd chia-plotter
+
+git submodule update --init
+./make_devel.sh
+./build/chia_plot --help
 ```
 
 The binaries will end up in `build/`, you can copy them elsewhere freely (on the same machine, or similar OS).
+
+---
+### macOS Big Sur
+First you need to install a package manager called [Brew](https://brew.sh/) and [Xcode](https://apps.apple.com/app/xcode/id497799835) from the Apple App Store.
+```bash
+brew install libsodium gmp cmake git autoconf automake libtool wget
+brew link cmake
+wget https://raw.githubusercontent.com/facebookincubator/fizz/master/build/fbcode_builder/CMake/FindSodium.cmake -O /usr/local/opt/cmake/share/cmake/Modules/FindSodium.cmake
+git clone https://github.com/madMAx43v3r/chia-plotter.git 
+cd chia-plotter
+git submodule update --init
+./make_devel.sh
+./build/chia_plot --help
+```
+
+## Running in a Docker container
+
+In some setups and scenarios, it could be useful to run your plotter inside a Docker container. This could be potentially useful while running `chia-plotter` in Windows.
+
+To do so, install Docker in your computer and them run the following command:
+
+```sh
+docker run \
+  -v <path-to-your-tmp-dir>:/mnt/harvester \
+  -v <path-to-your-final-dir>:/mnt/farm \
+  odelucca/chia-plotter \
+    -t /mnt/harvester/ \
+    -d /mnt/farm/ \
+    -p <pool-key> \
+    -f <farm-key> \
+    -r <number-of-CPU-cores>
+```
+> 💡 You can provide any of the plotter arguments after the image name (`odelucca/chia-plotter`)
+
+In a Linux benchmark, we were able to find that running in Docker has only 5% performance impact than running in native OS.
+
+For Windows users, you should check if your Docker configuration has any RAM or CPU limits. Since Docke runs inside HyperV, that could potentially constrain your hardware usage. In any case, you can set the RAM limits with the `-m` flag (after the `docker run` command).
+
+### Regarding multithread in Docker
+
+While running in Windows, you may need to proper configure your Docker to allow multi CPUs. You can do so by following [this article](https://www.thorsten-hans.com/docker-container-cpu-limits-explained/)
+
+In a nutshell, you could also pass the `--cpus` flag to your `docker run` command in order to achieve the same result.
+
+So, for example, the following command:
+```sh
+docker run \
+  -v <path-to-your-tmp-dir>:/mnt/harvester \
+  -v <path-to-your-final-dir>:/mnt/farm \
+  -m 8000 \
+  --cpus 8 \
+  odelucca/chia-plotter \
+    -t /mnt/harvester/ \
+    -d /mnt/farm/ \
+    -p <pool-key> \
+    -f <farm-key> \
+    -r 8
+```
+
+Would run your plotter with 8 CPUs and 8GB of RAM.
+
+---
 
 ## Known Issues
 
